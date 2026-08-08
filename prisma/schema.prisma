@@ -1,0 +1,324 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+enum Role {
+  ADMIN
+  MANAGER
+  INSPECTOR
+  CLIENT
+}
+
+enum PropertyRelation {
+  TENANT
+  LANDLORD
+}
+
+enum ComplianceDocumentType {
+  GAS_SAFETY
+  EICR
+  EPC
+  HMO_LICENCE
+  SELECTIVE_LICENCE
+  FIRE_RISK_ASSESSMENT
+  LEGIONELLA_RISK_ASSESSMENT
+  PAT_TESTING
+  OTHER
+}
+
+enum FieldType {
+  YES_NO
+  DROPDOWN
+  MULTIPLE_CHOICE
+  SCORE
+  TEXT
+  SHORT_TEXT
+  NUMBER
+  DATE
+  PHOTO
+  INFO_TEXT
+  TERMS
+  SIGNATURE
+  PAGE_BREAK
+  GRID_SECTION
+  INVENTORY_SECTION
+}
+
+model Company {
+  id        String   @id @default(cuid())
+  name      String
+  logoUrl   String?
+  createdAt DateTime @default(now())
+
+  // Billing — set once the company completes Stripe Checkout after signup. Null values
+  // mean "hasn't started billing setup yet" (shouldn't normally happen once signup flow is
+  // wired up, but kept nullable so existing companies from before billing existed don't break).
+  stripeCustomerId     String?
+  stripeSubscriptionId String?
+  subscriptionStatus   String? // trialing, active, past_due, canceled, incomplete, complimentary
+  planTier             String? // starter, growth, scale
+  trialEndsAt          DateTime?
+
+  users      User[]
+  properties Property[]
+  templates  Template[]
+}
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  name          String?
+  emailVerified Boolean   @default(false)
+  image         String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  // Our own fields, unrelated to Better Auth itself
+  role      Role     @default(INSPECTOR)
+  companyId String?
+  company   Company? @relation(fields: [companyId], references: [id])
+
+  sessions    Session[]
+  accounts    Account[]
+  inspections Inspection[] @relation("StaffInspections")
+
+  // For CLIENT-role users (tenants/landlords) — which properties they can see, and any
+  // self-service inspections specifically assigned to them to fill out themselves.
+  propertyAccess       PropertyAccess[]
+  assignedInspections  Inspection[]     @relation("AssignedClientInspections")
+  uploadedComplianceDocuments ComplianceDocument[]
+}
+
+// Better Auth's own session/account/verification tables — required shape, don't rename fields.
+model Session {
+  id        String   @id @default(cuid())
+  expiresAt DateTime
+  token     String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  ipAddress String?
+  userAgent String?
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Account {
+  id                    String    @id @default(cuid())
+  accountId             String
+  providerId            String
+  userId                String
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accessToken           String?
+  refreshToken          String?
+  idToken               String?
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+  scope                 String?
+  password              String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+}
+
+model Verification {
+  id         String    @id @default(cuid())
+  identifier String
+  value      String
+  expiresAt  DateTime
+  createdAt  DateTime? @default(now())
+  updatedAt  DateTime? @updatedAt
+}
+
+model Property {
+  id           String   @id @default(cuid())
+  companyId    String
+  company      Company  @relation(fields: [companyId], references: [id])
+  address      String
+  city         String?
+  postcode     String?
+  bedrooms     Int?
+  type         String // flat, house, commercial, HMO, studio, room
+  landlordName String?
+  notes        String?
+  createdAt    DateTime @default(now())
+
+  // How often this property should be inspected, in months — used to compute a suggested
+  // "next inspection due" date from the last completed inspection, when nothing's actually
+  // been scheduled yet. Null means no recurring schedule is set.
+  inspectionFrequencyMonths Int?
+
+  inspections Inspection[]
+  access      PropertyAccess[]
+  complianceDocuments ComplianceDocument[]
+}
+
+// Any compliance document a property needs tracked — Gas Safety, EICR, EPC, HMO licence,
+// etc. Deliberately generic (one model, a type field) rather than a separate table per
+// document type, so adding a new document type later is just a new enum value, not a schema
+// change touching multiple tables.
+model ComplianceDocument {
+  id                String                 @id @default(cuid())
+  propertyId        String
+  property          Property               @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  type              ComplianceDocumentType
+  otherTypeLabel    String? // used when type = OTHER, to let the user name what it actually is
+  certificateNumber String?
+  issuingBody       String?
+  issueDate         DateTime?
+  expiryDate        DateTime?
+  documentUrl       String? // uploaded PDF/photo of the actual certificate
+  notes             String?
+  uploadedById      String?
+  uploadedBy        User?    @relation(fields: [uploadedById], references: [id])
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+}
+
+// Links a CLIENT-role user (tenant or landlord) to a specific property they should be able
+// to see in their self-service portal. A property can have multiple tenants/landlords, and
+// a person could in principle be linked to more than one property.
+model PropertyAccess {
+  id         String           @id @default(cuid())
+  userId     String
+  user       User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  propertyId String
+  property   Property         @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  relation   PropertyRelation
+  createdAt  DateTime         @default(now())
+
+  @@unique([userId, propertyId])
+}
+
+model Inspection {
+  id            String    @id @default(cuid())
+  propertyId    String
+  property      Property  @relation(fields: [propertyId], references: [id])
+  inspectorId   String
+  inspector     User      @relation("StaffInspections", fields: [inspectorId], references: [id])
+  type          String // check-in, check-out, mid-term, hmo, legionella, maintenance
+  status        String    @default("draft") // draft, completed
+  scheduledDate DateTime?
+  completedDate DateTime?
+  createdAt     DateTime  @default(now())
+
+  templateId String?
+  template   Template? @relation(fields: [templateId], references: [id])
+
+  // Self-service inspections can be assigned to a specific CLIENT (tenant/landlord) to fill
+  // out themselves in the portal, separate from `inspector` (the staff member who set it up).
+  assignedClientId String?
+  assignedClient    User?   @relation("AssignedClientInspections", fields: [assignedClientId], references: [id])
+
+  // AI-generated executive summary of the completed inspection (optional, generated on demand)
+  aiSummary String?
+
+  // Section IDs hidden just for THIS inspection (JSON array) — different from a section being
+  // hidden on the template itself, which affects every inspection. Lets an inspector skip a
+  // section that doesn't apply to this particular property without changing the shared template.
+  excludedSectionIds String?
+
+  // Lets a check-out (or any) inspection reference an earlier one for side-by-side comparison
+  // — only meaningful when both use the exact same template, since that's the only case we
+  // can reliably match fields between them.
+  comparedToInspectionId String?
+  comparedToInspection    Inspection?  @relation("InspectionComparison", fields: [comparedToInspectionId], references: [id])
+  comparedByInspections   Inspection[] @relation("InspectionComparison")
+
+  items   InspectionItem[]
+  answers FieldAnswer[]
+  report  Report?
+}
+
+model InspectionItem {
+  id           String     @id @default(cuid())
+  inspectionId String
+  inspection   Inspection @relation(fields: [inspectionId], references: [id])
+  room         String
+  itemName     String
+  condition    String // good, fair, poor, damaged
+  make         String? // brand/manufacturer - only meaningful for appliances (oven, boiler, etc.)
+  notes        String?
+
+  // Set when this item was added under a template's Inventory Section field
+  templateFieldId String?
+  templateField    TemplateField? @relation(fields: [templateFieldId], references: [id])
+
+  photos Photo[]
+}
+
+model Photo {
+  id                String          @id @default(cuid())
+  inspectionItemId  String?
+  inspectionItem    InspectionItem? @relation(fields: [inspectionItemId], references: [id])
+  fieldAnswerId     String?
+  fieldAnswer       FieldAnswer?    @relation(fields: [fieldAnswerId], references: [id])
+  url               String
+  timestamp         DateTime        @default(now())
+}
+
+model Report {
+  id           String     @id @default(cuid())
+  inspectionId String     @unique
+  inspection   Inspection @relation(fields: [inspectionId], references: [id])
+  pdfUrl       String?
+  generatedAt  DateTime   @default(now())
+}
+
+// ── Template engine ──────────────────────────────────────────
+
+model Template {
+  id             String   @id @default(cuid())
+  companyId      String
+  company        Company  @relation(fields: [companyId], references: [id])
+  name           String
+  inspectionType String // check-in, check-out, mid-term, hmo, legionella, maintenance
+  propertyType   String? // studio, room, flat, house, hmo, commercial, any
+  createdAt      DateTime @default(now())
+
+  sections    TemplateSection[]
+  inspections Inspection[]
+}
+
+model TemplateSection {
+  id         String   @id @default(cuid())
+  templateId String
+  template   Template @relation(fields: [templateId], references: [id])
+  title      String
+  order      Int      @default(0)
+  hidden     Boolean  @default(false)
+
+  fields TemplateField[]
+}
+
+model TemplateField {
+  id        String    @id @default(cuid())
+  sectionId String
+  section   TemplateSection @relation(fields: [sectionId], references: [id])
+  label     String
+  type      FieldType
+  options   String? // JSON array for DROPDOWN/MULTIPLE_CHOICE; plain text for INFO_TEXT/TERMS/GRID_SECTION/pre-filled TEXT
+  mandatory Boolean   @default(false)
+  order     Int       @default(0)
+  hidden    Boolean   @default(false)
+
+  answers FieldAnswer[]
+  items   InspectionItem[] // items added under an INVENTORY_SECTION field
+}
+
+model FieldAnswer {
+  id           String        @id @default(cuid())
+  inspectionId String
+  inspection   Inspection    @relation(fields: [inspectionId], references: [id])
+  fieldId      String
+  field        TemplateField @relation(fields: [fieldId], references: [id])
+  value        String?
+
+  photos Photo[]
+
+  @@unique([inspectionId, fieldId])
+}
