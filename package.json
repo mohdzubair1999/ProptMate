@@ -1,0 +1,50 @@
+{
+  "name": "proptmate",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build --webpack",
+    "start": "next start",
+    "lint": "next lint",
+    "postinstall": "node scripts/postinstall.js"
+  },
+  "dependencies": {
+    "@fontsource/inter": "^5.3.0",
+    "@fontsource/space-grotesk": "^5.3.0",
+    "@prisma/client": "^5.20.0",
+    "@react-pdf/renderer": "^4.5.1",
+    "@sentry/nextjs": "^10.69.0",
+    "@stripe/react-stripe-js": "^6.8.0",
+    "idb": "^8.0.3",
+    "qrcode": "^1.5.4",
+    "@stripe/stripe-js": "^9.12.1",
+    "@vercel/blob": "^2.6.1",
+    "bcryptjs": "^2.4.3",
+    "better-auth": "1.7.0",
+    "jose": "^5.9.6",
+    "next": "^16.2.6",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "sharp": "^0.35.3",
+    "stripe": "^22.4.0"
+  },
+  "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
+    "@types/node": "^20.14.10",
+    "@types/qrcode": "^1.5.6",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "autoprefixer": "^10.4.19",
+    "postcss": "^8.4.39",
+    "prisma": "^5.20.0",
+    "tailwindcss": "^3.4.6",
+    "typescript": "^5.5.3"
+  },
+  "overrides": {
+    "next": {
+      "postcss": "^8.5.10",
+      "sharp": "^0.35.0"
+    }
+  }
+}

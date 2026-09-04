@@ -1,0 +1,592 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+enum Role {
+  ADMIN
+  MANAGER
+  INSPECTOR
+  CLIENT
+}
+
+enum PropertyRelation {
+  TENANT
+  LANDLORD
+}
+
+enum ComplianceDocumentType {
+  GAS_SAFETY
+  EICR
+  EPC
+  HMO_LICENCE
+  SELECTIVE_LICENCE
+  FIRE_RISK_ASSESSMENT
+  LEGIONELLA_RISK_ASSESSMENT
+  PAT_TESTING
+  OTHER
+}
+
+enum FieldType {
+  YES_NO
+  DROPDOWN
+  MULTIPLE_CHOICE
+  SCORE
+  TEXT
+  SHORT_TEXT
+  NUMBER
+  DATE
+  PHOTO
+  INFO_TEXT
+  TERMS
+  SIGNATURE
+  PAGE_BREAK
+  GRID_SECTION
+  INVENTORY_SECTION
+}
+
+model Company {
+  id        String   @id @default(cuid())
+  name      String
+  logoUrl   String?
+  createdAt DateTime @default(now())
+
+  // Billing — set once the company completes Stripe Checkout after signup. Null values
+  // mean "hasn't started billing setup yet" (shouldn't normally happen once signup flow is
+  // wired up, but kept nullable so existing companies from before billing existed don't break).
+  stripeCustomerId     String?
+  stripeSubscriptionId String?
+  subscriptionStatus   String? // trialing, active, past_due, canceled, incomplete, complimentary
+  planTier             String? // starter, growth, scale
+  trialEndsAt          DateTime?
+
+  users      User[]
+  properties Property[]
+  templates  Template[]
+  auditLogs  AuditLog[]
+}
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  name          String?
+  emailVerified Boolean   @default(false)
+  image         String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  // Our own fields, unrelated to Better Auth itself
+  role      Role     @default(INSPECTOR)
+  companyId String?
+  company   Company? @relation(fields: [companyId], references: [id])
+
+  // Required by Better Auth's two-factor plugin
+  twoFactorEnabled Boolean @default(false)
+
+  sessions    Session[]
+  accounts    Account[]
+  inspections Inspection[] @relation("StaffInspections")
+
+  // For CLIENT-role users (tenants/landlords) — which properties they can see, and any
+  // self-service inspections specifically assigned to them to fill out themselves.
+  propertyAccess       PropertyAccess[]
+  assignedInspections  Inspection[]     @relation("AssignedClientInspections")
+  uploadedComplianceDocuments ComplianceDocument[]
+  twoFactor                   TwoFactor?
+}
+
+// Better Auth's own session/account/verification tables — required shape, don't rename fields.
+model Session {
+  id        String   @id @default(cuid())
+  expiresAt DateTime
+  token     String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  ipAddress String?
+  userAgent String?
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Account {
+  id                    String    @id @default(cuid())
+  accountId             String
+  providerId            String
+  userId                String
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accessToken           String?
+  refreshToken          String?
+  idToken               String?
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+  scope                 String?
+  password              String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  // Required by better-auth internally for its sign-in account lookup (confirmed directly
+  // from the library's own source: createLocalAccountIssuer("credential") produces exactly
+  // "local:credential") — without this column, better-auth can never find a matching
+  // credential account during sign-in, even when the user, password, and everything else
+  // is genuinely correct.
+  issuer String?
+}
+
+model Verification {
+  id         String    @id @default(cuid())
+  identifier String
+  value      String
+  expiresAt  DateTime
+  createdAt  DateTime? @default(now())
+  updatedAt  DateTime? @updatedAt
+}
+
+// Deliberately no hard foreign key to User: if a team member is later removed while the rest
+// of the company stays intact, their past audit entries should remain readable, not be
+// blocked or silently orphaned by a constraint. userEmail is a snapshot at the time of the
+// action for the same reason — it stays readable even after the user is long gone.
+model AuditLog {
+  id          String   @id @default(cuid())
+  companyId   String
+  company     Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  userId      String?
+  userEmail   String
+  action      String // e.g. "property.created", "inspection.completed"
+  entityType  String // e.g. "Property", "Inspection"
+  entityId    String
+  description String // human-readable summary, e.g. "Completed inspection for 184 Forest Road"
+  createdAt   DateTime @default(now())
+
+  @@index([companyId, createdAt])
+  @@index([entityType, entityId])
+}
+
+// Required by Better Auth's two-factor plugin — one row per user who has 2FA enabled.
+model TwoFactor {
+  id                      String    @id @default(cuid())
+  secret                  String
+  backupCodes             String
+  userId                  String    @unique
+  user                    User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  verified                Boolean   @default(true)
+  failedVerificationCount Int?      @default(0)
+  lockedUntil             DateTime?
+
+  @@index([secret])
+  @@index([userId])
+}
+
+model Property {
+  id           String   @id @default(cuid())
+  companyId    String
+  company      Company  @relation(fields: [companyId], references: [id])
+  address      String
+  city         String?
+  postcode     String?
+  bedrooms     Int?
+  type         String // flat, house, commercial, HMO, studio, room
+  landlordName String?
+  landlordAddress String?
+  notes        String?
+  createdAt    DateTime @default(now())
+
+  // How often this property should be inspected, in months — used to compute a suggested
+  // "next inspection due" date from the last completed inspection, when nothing's actually
+  // been scheduled yet. Null means no recurring schedule is set.
+  inspectionFrequencyMonths Int?
+
+  inspections Inspection[]
+  access      PropertyAccess[]
+  complianceDocuments ComplianceDocument[]
+  floorPlan   FloorPlan?
+}
+
+// A property has at most one floor plan — auto-generated from room names and dimensions
+// rather than freehand drawing, so it's a simple block layout (proportionally-sized room
+// rectangles arranged in a grid) rather than a true architectural plan with connecting
+// walls and doors. Accessible from the property page directly, and from within an
+// inspection, matching both use cases this was built for.
+model FloorPlan {
+  id         String   @id @default(cuid())
+  propertyId String   @unique
+  property   Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  levels     FloorPlanLevel[]
+}
+
+// A named floor (Ground floor, First floor, etc.) — each has its own independent room
+// layout, so a bedroom upstairs no longer gets placed next to a kitchen downstairs in the
+// same flat diagram.
+model FloorPlanLevel {
+  id          String          @id @default(cuid())
+  floorPlanId String
+  floorPlan   FloorPlan       @relation(fields: [floorPlanId], references: [id], onDelete: Cascade)
+  name        String
+  order       Int             @default(0)
+  rooms       FloorPlanRoom[]
+}
+
+model FloorPlanRoom {
+  id      String         @id @default(cuid())
+  levelId String
+  level   FloorPlanLevel @relation(fields: [levelId], references: [id], onDelete: Cascade)
+  name    String
+  widthM  Float // width in metres — for non-rectangle shapes, this is the bounding box width
+  lengthM Float // length in metres — for non-rectangle shapes, this is the bounding box length
+  order   Int            @default(0)
+
+  // "rectangle" (default), "bay-window" (a rectangle with a smaller rectangle protruding
+  // from one wall), or "l-shape" (a rectangle with a rectangular notch removed from one
+  // corner). shapeParams holds the extra dimensions each non-rectangle shape needs, as a
+  // JSON string — kept as one flexible field rather than several mostly-null columns, since
+  // different shapes need different parameter sets.
+  shape       String  @default("rectangle")
+  shapeParams String?
+
+  // A bay window combined onto whatever primary shape is set above (rather than being the
+  // room's only shape, which is what shape == "bay-window" already covers) - its own columns
+  // rather than bundled into shapeParams, since this add-on applies independently of which
+  // primary shape is selected, the same reasoning as rotationDeg below.
+  hasBayWindow    Boolean @default(false)
+  bayWindowWidthM Float?
+  bayWindowDepthM Float?
+
+  // True arbitrary-angle rotation (0-359.9 degrees), applied around the room's own centre -
+  // for a wall that runs at an angle to the rest of the property rather than sitting square
+  // to it. Its own column rather than bundled into shapeParams above, since rotation applies
+  // universally regardless of which shape is selected, unlike bay/notch/etc which are each
+  // tied to one specific shape.
+  rotationDeg Float?
+
+  // Null means "use the auto-generated layout position" — only set once someone drags this
+  // room to a specific spot, at which point it overrides the auto-layout for that room.
+  xM Float?
+  yM Float?
+
+  // JSON array of other room names (on the same floor) this room connects to via a door.
+  // Referenced by name rather than a database ID, since rooms are fully recreated on every
+  // save (deleted and re-inserted) rather than updated in place — an ID-based reference
+  // would be invalidated the moment the plan is saved again.
+  connectedRoomNames String?
+
+  // Room names (a subset of connectedRoomNames) for which the door's auto-computed swing
+  // direction (into whichever room is larger) has been manually flipped by the user.
+  flippedSwingConnections String?
+
+  // Independent of flippedSwingConnections — which side of the doorway the hinge sits on.
+  // Together these two independent flips give all four real door-swing configurations
+  // (each room x each hinge side), not just two.
+  flippedHingeConnections String?
+
+  // Independent of shape — a staircase can still be a plain rectangle, a bay, or an L-shape.
+  // stairDirection ("up" or "down") indicates whether this staircase leads up or down from
+  // this specific floor, and controls which way the drawn arrow points.
+  isStairs      Boolean @default(false)
+  stairDirection String?
+
+  // References the matching staircase on another floor (by that floor's name and that
+  // room's name, for the same reason connectedRoomNames uses names — rooms and levels are
+  // fully recreated on every save, so a database-ID reference would be invalidated
+  // immediately). Both null unless the staircase is explicitly linked to another floor.
+  stairLinkFloor String?
+  stairLinkRoom  String?
+
+  // JSON array of {type, xM, yM} — manual positions for individual fixtures (bath, toilet,
+  // sink, etc.) the person has dragged within this room. A fixture with no entry here falls
+  // back to the automatic row layout, the same "null means auto, set means manual override"
+  // pattern already used for the room's own xM/yM position within the floor.
+  fixturePositions String?
+
+  // JSON array of fixture type strings currently shown for this room (e.g. ["bath",
+  // "toilet"] or ["shower", "toilet", "basin"]) — null means "use the default set for this
+  // room type" (bath+toilet+basin for a bathroom, sink+hob for a kitchen), so rooms saved
+  // before this field existed keep showing their original fixtures unchanged.
+  enabledFixtures String?
+
+  // A garden/outdoor space, rendered with a hatched pattern instead of a normal room fill —
+  // mutually exclusive with isStairs, same pattern as the existing shape restrictions.
+  isGarden Boolean @default(false)
+
+  // JSON array of {type: "main"|"rear", wall: "top"|"bottom"|"left"|"right", positionM} —
+  // an exterior door leading straight outside from this room, as opposed to the existing
+  // connectedRoomNames doors which lead to another room.
+  exteriorDoors String?
+
+  // JSON array of {wall: "top"|"bottom"|"left"|"right", positionM} — small window markers
+  // along a room's exterior wall, same wall/position architecture as exteriorDoors but with
+  // simpler rendering (no swing arc).
+  windows String?
+
+  // JSON array of room type strings ("bathroom", "kitchen", "bedroom", "livingroom") that
+  // determine which fixtures show in this room, overriding whatever's auto-detected from the
+  // room's name. Unlike every other JSON field on this model, null and "[]" mean genuinely
+  // different things here: null means "use auto-detection from the name" (the original,
+  // always-on behaviour), while "[]" is a deliberate, explicit "no fixtures at all" override
+  // that must be preserved as-is, not treated as equivalent to null.
+  manualRoomTypes String?
+}
+
+// Any compliance document a property needs tracked — Gas Safety, EICR, EPC, HMO licence,
+// etc. Deliberately generic (one model, a type field) rather than a separate table per
+// document type, so adding a new document type later is just a new enum value, not a schema
+// change touching multiple tables.
+model ComplianceDocument {
+  id                String                 @id @default(cuid())
+  propertyId        String
+  property          Property               @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  type              ComplianceDocumentType
+  otherTypeLabel    String? // used when type = OTHER, to let the user name what it actually is
+  certificateNumber String?
+  issuingBody       String?
+  issueDate         DateTime?
+  expiryDate        DateTime?
+  documentUrl       String? // uploaded PDF/photo of the actual certificate
+  notes             String?
+  uploadedById      String?
+  uploadedBy        User?    @relation(fields: [uploadedById], references: [id])
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+}
+
+// Links a CLIENT-role user (tenant or landlord) to a specific property they should be able
+// to see in their self-service portal. A property can have multiple tenants/landlords, and
+// a person could in principle be linked to more than one property.
+model PropertyAccess {
+  id         String           @id @default(cuid())
+  userId     String
+  user       User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  propertyId String
+  property   Property         @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  relation   PropertyRelation
+  createdAt  DateTime         @default(now())
+  linkedReports PropertyAccessReport[]
+
+  @@unique([userId, propertyId])
+}
+
+// Explicitly records which report(s) a specific tenant/landlord should see, rather than
+// automatically showing every report ever generated for the property — a property can have
+// several reports over time (different tenancies, different report types), and not all of
+// them are relevant to any one person linked to it.
+model PropertyAccessReport {
+  id               String         @id @default(cuid())
+  propertyAccessId String
+  propertyAccess   PropertyAccess @relation(fields: [propertyAccessId], references: [id], onDelete: Cascade)
+  inspectionId     String
+  inspection       Inspection     @relation(fields: [inspectionId], references: [id], onDelete: Cascade)
+  createdAt        DateTime       @default(now())
+
+  @@unique([propertyAccessId, inspectionId])
+}
+
+model Inspection {
+  id            String    @id @default(cuid())
+  propertyId    String
+  property      Property  @relation(fields: [propertyId], references: [id])
+  inspectorId   String
+  inspector     User      @relation("StaffInspections", fields: [inspectorId], references: [id])
+  type          String // check-in, check-out, mid-term, hmo, legionella, maintenance
+  status        String    @default("draft") // draft, completed
+  scheduledDate DateTime?
+  completedDate DateTime?
+  createdAt     DateTime  @default(now())
+
+  // When set, this inspection is soft-deleted — hidden from every normal view, but the record
+  // and everything linked to it (items, answers, photos, report) is fully intact and
+  // recoverable, unlike the hard delete this replaces which destroyed all of it permanently
+  // with no way back.
+  deletedAt DateTime?
+
+  templateId String?
+  template   Template? @relation(fields: [templateId], references: [id])
+
+  // Self-service inspections can be assigned to a specific CLIENT (tenant/landlord) to fill
+  // out themselves in the portal, separate from `inspector` (the staff member who set it up).
+  assignedClientId String?
+  assignedClient    User?   @relation("AssignedClientInspections", fields: [assignedClientId], references: [id])
+
+  // AI-generated executive summary of the completed inspection (optional, generated on demand)
+  aiSummary String?
+
+  // Set when this inspection was created by AI-extracting an externally-sourced check-in
+  // report (e.g. from a different agency) rather than filled out directly in ProptMate. The
+  // URL points at the original uploaded document, so it stays available for the person to
+  // verify the AI's field mappings against the source.
+  sourceDocumentUrl String?
+
+  // JSON array of {room, summary} — a plain-language, room-by-room reference extracted
+  // alongside the structured field mappings above, meant to be read directly rather than
+  // compared field-by-field, since the person plans to also cross-check the original report
+  // themselves.
+  importedRoomSummaries String?
+
+  // Section IDs hidden just for THIS inspection (JSON array) — different from a section being
+  // hidden on the template itself, which affects every inspection. Lets an inspector skip a
+  // section that doesn't apply to this particular property without changing the shared template.
+  excludedSectionIds String?
+
+  // Lets a check-out (or any) inspection reference an earlier one for side-by-side comparison
+  // — only meaningful when both use the exact same template, since that's the only case we
+  // can reliably match fields between them.
+  comparedToInspectionId String?
+  comparedToInspection    Inspection?  @relation("InspectionComparison", fields: [comparedToInspectionId], references: [id])
+  comparedByInspections   Inspection[] @relation("InspectionComparison")
+
+  // "Summary Reference" — a standard pattern in professional inventory reports: the key
+  // safety/utility facts gathered in one place near the front (alarm locations and testing,
+  // meter readings, key safety numbers), rather than only buried in the room-by-room detail.
+  // All optional since not every inspection type needs this (e.g. a quick mid-term check
+  // wouldn't normally re-capture meter readings).
+  propertyDescription    String?
+  clientName              String?
+  clientAddress           String?
+  furnishingStatus        String?
+  keyLocation             String?
+  decorativeOrder         String?
+  cleaningNotes           String?
+  gardenNotes             String?
+  smokeAlarmLocation      String?
+  smokeAlarmTested        String?
+  coAlarmLocation         String?
+  coAlarmTested           String?
+  otherAlarmLocation      String?
+  otherAlarmTested        String?
+  boilerLocation          String?
+  stopcockLocation        String?
+  fuseBoxLocation         String?
+  metersLocation          String?
+  electricityMeterSerial  String?
+  electricityMeterReading String?
+  gasMeterSerial          String?
+  gasMeterReading         String?
+
+  items   InspectionItem[]
+  answers FieldAnswer[]
+  report  Report?
+  linkedToAccess PropertyAccessReport[]
+  acknowledgements ReportAcknowledgement[]
+}
+
+model InspectionItem {
+  id           String     @id @default(cuid())
+  inspectionId String
+  inspection   Inspection @relation(fields: [inspectionId], references: [id])
+  room         String
+  itemName     String
+  condition    String // good, fair, poor, damaged
+  make         String? // brand/manufacturer - only meaningful for appliances (oven, boiler, etc.)
+  quantity     Int? // count of this item - only meaningful for multi-instance fixtures (light switches, sockets)
+  notes        String?
+  cleanliness  String? // e.g. Professionally Cleaned, Clean, Requires Cleaning, Not Cleaned, or a custom free-text value
+
+  // Set when this item was added under a template's Inventory Section field
+  templateFieldId String?
+  templateField    TemplateField? @relation(fields: [templateFieldId], references: [id])
+
+  photos Photo[]
+}
+
+model Photo {
+  id                String          @id @default(cuid())
+  inspectionItemId  String?
+  inspectionItem    InspectionItem? @relation(fields: [inspectionItemId], references: [id])
+  fieldAnswerId     String?
+  fieldAnswer       FieldAnswer?    @relation(fields: [fieldAnswerId], references: [id])
+  url               String
+  timestamp         DateTime        @default(now())
+}
+
+model Report {
+  id           String     @id @default(cuid())
+  inspectionId String     @unique
+  inspection   Inspection @relation(fields: [inspectionId], references: [id])
+  pdfUrl       String?
+  generatedAt  DateTime   @default(now())
+}
+
+// Tracks whether a specific person has confirmed receiving a specific report - each
+// recipient gets their own record and their own unique, unguessable link, since a property
+// can have several tenants who each need to individually confirm, not just "someone" did.
+//
+// Deliberately links to the Inspection (stable, persistent) rather than the Report row
+// directly (which gets overwritten in place every time a report is regenerated) - pdfUrlSnapshot
+// captures the exact file that was actually sent at the time, so a later regeneration can
+// never retroactively change what a person's signed confirmation was actually confirming.
+// This matters for the record's evidentiary value: it should describe a fixed moment, not
+// whatever the report happens to be today.
+model ReportAcknowledgement {
+  id               String     @id @default(cuid())
+  inspectionId     String
+  inspection       Inspection @relation(fields: [inspectionId], references: [id], onDelete: Cascade)
+  recipientEmail   String
+  recipientName    String
+  token            String     @unique
+  pdfUrlSnapshot   String
+  sentAt           DateTime   @default(now())
+  confirmedAt      DateTime?
+  confirmedName    String?
+  signatureDataUrl String?    @db.Text
+  ipAddress        String?
+
+  @@unique([inspectionId, recipientEmail])
+}
+
+// ── Template engine ──────────────────────────────────────────
+
+model Template {
+  id             String   @id @default(cuid())
+  companyId      String
+  company        Company  @relation(fields: [companyId], references: [id])
+  name           String
+  inspectionType String // check-in, check-out, mid-term, hmo, legionella, maintenance
+  propertyType   String? // studio, room, flat, house, hmo, commercial, any
+  createdAt      DateTime @default(now())
+
+  sections    TemplateSection[]
+  inspections Inspection[]
+}
+
+model TemplateSection {
+  id         String   @id @default(cuid())
+  templateId String
+  template   Template @relation(fields: [templateId], references: [id])
+  title      String
+  order      Int      @default(0)
+  hidden     Boolean  @default(false)
+
+  fields TemplateField[]
+}
+
+model TemplateField {
+  id        String    @id @default(cuid())
+  sectionId String
+  section   TemplateSection @relation(fields: [sectionId], references: [id])
+  label     String
+  type      FieldType
+  options   String? // JSON array for DROPDOWN/MULTIPLE_CHOICE; plain text for INFO_TEXT/TERMS/GRID_SECTION/pre-filled TEXT
+  mandatory Boolean   @default(false)
+  order     Int       @default(0)
+  hidden    Boolean   @default(false)
+
+  answers FieldAnswer[]
+  items   InspectionItem[] // items added under an INVENTORY_SECTION field
+}
+
+model FieldAnswer {
+  id           String        @id @default(cuid())
+  inspectionId String
+  inspection   Inspection    @relation(fields: [inspectionId], references: [id])
+  fieldId      String
+  field        TemplateField @relation(fields: [fieldId], references: [id])
+  value        String?
+
+  photos Photo[]
+
+  @@unique([inspectionId, fieldId])
+}
