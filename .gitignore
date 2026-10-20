@@ -1,0 +1,16 @@
+node_modules
+.next
+.env
+.env.local
+*.log
+.DS_Store
+
+# Sketch accuracy test material (real sketches, true sizes, results) stays on the computer that runs the test
+sketch-eval/*
+!sketch-eval/README.md
+!sketch-eval/example.json
+
+# Photo accuracy test material (real photos, what is in them, results) stays on the computer that runs the test
+photo-eval/*
+!photo-eval/README.md
+!photo-eval/example.json
