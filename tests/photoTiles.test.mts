@@ -1,0 +1,23 @@
+import sharp from "sharp";
+import { makeTiles, TILE_TRIGGER_PX, TILE_MAX_SIDE, TILE_OVERLAP } from "../lib/photoTiles";
+let pass = 0, fail = 0; const ok = (n: string, c: boolean, x: any = "") => { c ? pass++ : (fail++, console.log("FAIL:", n, typeof x === "string" ? x.slice(0, 300) : JSON.stringify(x).slice(0, 400))); };
+const dims = async (b64: string) => { const m = await sharp(Buffer.from(b64, "base64")).metadata(); return { w: m.width!, h: m.height!, f: m.format }; };
+// a picture whose four quadrants are different flat colours, so a tile's colour says which part of the photo it came from
+const quad = async (w: number, h: number, orientation?: number) => { const q = (c: string) => sharp({ create: { width: Math.ceil(w / 2), height: Math.ceil(h / 2), channels: 3, background: c } }).png().toBuffer(); const [a, b, c, d] = await Promise.all([q("#ff0000"), q("#00ff00"), q("#0000ff"), q("#ffff00")]); let img = sharp({ create: { width: w, height: h, channels: 3, background: "#000" } }).composite([{ input: a, left: 0, top: 0 }, { input: b, left: Math.floor(w / 2), top: 0 }, { input: c, left: 0, top: Math.floor(h / 2) }, { input: d, left: Math.floor(w / 2), top: Math.floor(h / 2) }]).jpeg({ quality: 95 }); if (orientation) img = img.withMetadata({ orientation }); return img.toBuffer(); };
+const centreColour = async (b64: string) => { const { data, info } = await sharp(Buffer.from(b64, "base64")).raw().toBuffer({ resolveWithObject: true }); const i = ((Math.floor(info.height / 2) * info.width) + Math.floor(info.width / 2)) * info.channels; return [data[i], data[i + 1], data[i + 2]]; };
+const near = (c: number[], t: number[]) => c.every((v, i) => Math.abs(v - t[i]) < 60);
+ok("the settings: crops only for photos over 1900 px, each at most 1568 px, with 12% overlap", TILE_TRIGGER_PX === 1900 && TILE_MAX_SIDE === 1568 && TILE_OVERLAP === 0.12);
+let t = await makeTiles(await quad(4000, 3000));
+ok("a 4000x3000 phone photo gives four crops, named top left, top right, bottom left, bottom right", t.length === 4 && t.map((x) => x.label).join() === "top left,top right,bottom left,bottom right", t.map((x) => x.label));
+const ds = await Promise.all(t.map((x) => dims(x.base64))); ok("each is a JPEG no larger than 1568 px on its longest side (so the AI is not made to shrink it again)", ds.every((d) => d.f === "jpeg" && Math.max(d.w, d.h) <= 1568 && Math.max(d.w, d.h) > 1000), ds);
+ok("they really are DIFFERENT PARTS of the photo: the centre of each crop is the colour of its own quarter (red, green, blue, yellow)", near(await centreColour(t[0].base64), [255, 0, 0]) && near(await centreColour(t[1].base64), [0, 255, 0]) && near(await centreColour(t[2].base64), [0, 0, 255]) && near(await centreColour(t[3].base64), [255, 255, 0]));
+ok("crops are at higher effective detail than the whole photo shown at 1568: 4000 px shown at 1568 is 39% of true size, a crop (2240 px wide) at 1568 is 70%", ds[0].w >= 1500);
+ok("a photo already small enough to be seen whole (1600x1200) gets NO crops", (await makeTiles(await quad(1600, 1200))).length === 0);
+ok("the limit is exact: 1900x1900 gets none, 1901 on one side gets four", (await makeTiles(await quad(1900, 1900))).length === 0 && (await makeTiles(await quad(1901, 1200))).length === 4);
+t = await makeTiles(await quad(3000, 4000)); ok("a PORTRAIT photo is cut the same way (four crops)", t.length === 4 && (await dims(t[0].base64)).h > (await dims(t[0].base64)).w);
+const sideways = await quad(4000, 3000, 6); const ts = await makeTiles(sideways); ok("a phone photo stored SIDEWAYS with a rotate tag (orientation 6) is turned upright first, so the crops come out the right way up and the right shape (portrait)", ts.length === 4 && (await dims(ts[0].base64)).h > (await dims(ts[0].base64)).w, await dims(ts[0].base64));
+ok("a photo with the rotate tag but small sides after turning gets none (its sides are checked AFTER turning)", (await makeTiles(await quad(1800, 2400, 6))).length === 4 && (await makeTiles(await quad(1200, 1800, 6))).length === 0);
+for (const junk of [Buffer.alloc(0), Buffer.from("not an image"), Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3])]) ok(`junk bytes (${junk.length} bytes) give no crops and no error`, (await makeTiles(junk)).length === 0);
+const png = await sharp({ create: { width: 2400, height: 1800, channels: 3, background: "#888" } }).png().toBuffer(); ok("a PNG works too", (await makeTiles(png)).length === 4);
+const t0 = Date.now(); await makeTiles(await quad(6000, 4500)); ok(`a 27-megapixel photo is cut in ${Date.now() - t0} ms (a few seconds at most)`, Date.now() - t0 < 8000, Date.now() - t0);
+console.log(`\nDetail crops of large photos: ${pass} passed, ${fail} failed`); process.exit(fail ? 1 : 0);

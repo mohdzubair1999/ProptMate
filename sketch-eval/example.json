@@ -1,0 +1,9 @@
+{
+  "image": "example-sketch.jpg",
+  "notes": "Copy this file, rename it, and describe your own sketch. This file is ignored by the script.",
+  "rooms": [
+    { "name": "Lounge", "widthM": 4.5, "lengthM": 3.8, "connectsTo": ["Hall"] },
+    { "name": "Kitchen", "widthM": 3.2, "lengthM": 3.8, "connectsTo": ["Hall"] },
+    { "name": "Hall", "widthM": 1.4, "lengthM": 3.8 }
+  ]
+}
