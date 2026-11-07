@@ -1,0 +1,11 @@
+{
+  "name": "Example: cracked sealant",
+  "notes": "Copy this file, rename it, and describe your own photos. This file is ignored by the script.",
+  "photos": ["example-photo.jpg"],
+  "mode": "inventory",
+  "expect": {
+    "mentions": [["crack*", "split"], ["mould", "mold", "black"]],
+    "absent": [["burst", "flood*", "leak*"]],
+    "clean": false
+  }
+}
