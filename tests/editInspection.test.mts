@@ -1,0 +1,27 @@
+import { existsSync, readFileSync } from "node:fs";
+import { reportIsStale as S } from "../lib/reportDates";
+let pass = 0, fail = 0; const ok = (n: string, c: boolean, x: any = "") => { c ? pass++ : (fail++, console.log("FAIL:", n, typeof x === "string" ? x.slice(0, 300) : JSON.stringify(x).slice(0, 400))); };
+const rd = (p: string) => readFileSync(p, "utf8");
+const T0 = new Date("2026-11-10T10:00:00Z"), T1 = new Date("2026-11-12T15:30:00Z");
+// ---------- is the report older than the edits? ----------
+ok("a report made AFTER the inspection was completed is up to date; one made BEFORE it was completed again is out of date", S(T1, T0) === false && S(T0, T1) === true);
+ok("the same moment, or within a second, is not 'out of date' (generating straight after completing)", S(T0, T0) === false && S(T0, new Date(T0.getTime() + 900)) === false && S(T0, new Date(T0.getTime() + 1100)) === true);
+ok("works with dates as text or numbers too (as they arrive from the database layer), and anything unusable is simply not out of date", S(T0.toISOString(), T1.toISOString()) === true && S(T0.getTime(), T1.getTime()) === true && [[null, T1], [T0, null], [undefined, undefined], ["nope", T1], [T0, "nope"], [{}, T1], [NaN, T1]].every(([g, c]) => S(g, c) === false));
+ok("an inspection never completed again (still the original completion date, report made after) is never flagged", S(new Date("2026-11-11T09:00:00Z"), new Date("2026-11-10T10:00:00Z")) === false);
+// ---------- Edit instead of Amend ----------
+const act = rd("lib/actions/inspections.ts"), page = rd("app/dashboard/inspections/[id]/page.tsx"), help = rd("app/help/help-content.tsx"), rep = rd("lib/actions/reports.ts");
+const editBtn = existsSync("app/dashboard/inspections/[id]/edit-inspection-button.tsx") ? rd("app/dashboard/inspections/[id]/edit-inspection-button.tsx") : "";
+const fn = act.slice(act.indexOf("export async function editCompletedInspection"), act.indexOf("export async function deleteInspection"));
+ok("the old Amend button and its pop-up are gone, and nothing in the app calls the old action", !existsSync("app/dashboard/inspections/[id]/amend-inspection-button.tsx") && !/amendInspection|AmendInspectionButton|AmendState/.test(act + page + editBtn));
+ok("Edit asks for no reason at all: the action takes only the inspection, never reads or requires a reason, and the button has no text box, no dialog and no reason wording", !/reason/i.test(fn) && fn.includes('formData.get("inspectionId")') && !/textarea|aria-modal|role="dialog"|reason/i.test(editBtn));
+ok("the button says 'Edit', is one click (a plain submit button), shows a busy state, and shows any error in words", /\{pending \? "Opening…" : "✎ Edit"\}/.test(editBtn) && /type="submit"/.test(editBtn) && /state\?\.error/.test(editBtn) && !/Amend/i.test(editBtn));
+ok("only staff can edit a completed inspection, only in their own company, and only when it is completed", /user\.role !== "ADMIN" && user\.role !== "MANAGER" && user\.role !== "INSPECTOR"/.test(fn) && /getOwnedInspection\(user, inspectionId\)/.test(fn) && /owned\.status !== "completed"/.test(fn));
+ok("it still takes the inspection back to draft, keeps the date it was first completed, and records in the audit log that it was reopened and whether the report had been sent (without any reason)", /status: "draft", completedDate: null, firstCompletedDate: owned\.firstCompletedDate \?\? owned\.completedDate/.test(fn) && /action: "inspection\.reopened"/.test(fn) && /Report already sent to \$\{sent\}/.test(fn) && !/Amended|Reason/.test(fn));
+ok("the inspection page shows plain 'draft' / 'completed' (no '· amended'), and the Edit button only on a completed inspection", !/ · amended/.test(page) && /\{!isDraft && <EditInspectionButton inspectionId=\{inspection\.id\} \/>\}/.test(page));
+ok("the Help guide says to click Edit (nothing to type), no longer mentions a reason or an Amend button, and explains regenerating and that sent copies keep the earlier version", /click Edit\. There is nothing to type\./.test(help) && !/Type the reason|Amend inspection|Reason for amending/.test(help) && /Click Regenerate report\./.test(help) && /keep showing the version that was sent/.test(help) && /The Edit button is missing/.test(help));
+// ---------- the old report coming back ----------
+ok("THE BUG: every generated report is saved at its OWN new address (random suffix) and never over the earlier file, so a regenerated report cannot be served from a cached copy of the old one", /addRandomSuffix: true/.test(rep) && !/allowOverwrite/.test(rep.replace(/\/\/.*$/gm, "")));
+ok("the earlier file is left alone (a link already sent keeps the version that was sent), and the report record points at the new file", !/\bdel\(/.test(rep) && /update: \{ pdfUrl: blob\.url, generatedAt: new Date\(\) \}/.test(rep));
+ok("the inspection page tells you when the report is older than your edits, with the way to fix it, only when a report exists", /reportIsStale\(inspection\.report\.generatedAt, inspection\.completedDate\)/.test(page) && /data-testid="report-stale"/.test(page) && /Click <span className="font-medium">Regenerate report<\/span>/.test(page));
+ok("the report is still read fresh from the database on every generation (no cache in the way)", !/unstable_cache|force-cache/.test(rep) && /prisma\.inspection\.findFirst/.test(rep));
+console.log(`\nEdit instead of Amend, and the regenerated report: ${pass} passed, ${fail} failed`); process.exit(fail ? 1 : 0);
