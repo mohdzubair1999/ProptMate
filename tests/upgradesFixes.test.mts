@@ -1,0 +1,18 @@
+import { readFileSync } from "node:fs";
+import { normaliseWalkthrough, WALKTHROUGH_SCHEMA } from "../lib/ai/walkthrough";
+import { postcodeFor } from "../lib/routePlan";
+let pass = 0, fail = 0; const ok = (n: string, c: boolean, x: any = "") => { c ? pass++ : (fail++, console.log("FAIL:", n, typeof x === "string" ? x.slice(0, 300) : JSON.stringify(x).slice(0, 300))); };
+const rd = (p: string) => readFileSync(p, "utf8");
+const w = normaliseWalkthrough({ items: ["new", "good", "wear_and_tear", "worn", "damaged", "beyond_economical_repair", "nonsense"].map((c, i) => ({ name: `I${i}`, condition: c })) });
+ok("walk-through conditions: only the four; damage is recorded as worn, junk as good", w.map((x) => x.condition).join() === "new,good,wear_and_tear,worn,worn,worn,good", w.map((x) => x.condition).join());
+ok("the AI is only offered the four", JSON.stringify((WALKTHROUGH_SCHEMA as any).properties.items.items.properties.condition.enum) === '["new","good","wear_and_tear","worn"]');
+const ui = rd("app/dashboard/inspections/[id]/walkthrough/walkthrough-recorder.tsx");
+ok("the drop-down shows only the four", /WALKTHROUGH_CONDITIONS\.includes\(o\.value\)/.test(ui));
+ok("postcode: the field first, else one found in the address, else none", postcodeFor("ab12cd", "x") === "AB1 2CD" && postcodeFor(null, "12 High Street, Hemel Hempstead HP1 1AA") === "HP1 1AA" && postcodeFor("", "5 Road, SW1A1AA") === "SW1A 1AA" && postcodeFor(null, "no code here") === null && postcodeFor(undefined, undefined) === null);
+const rp = rd("app/dashboard/route/page.tsx");
+ok("the day page uses it and tells you which property needs a postcode, with a link to fix it", /postcodeFor\(r\.property\.postcode, r\.property\.address\)/.test(rp) && /route-no-postcode/.test(rp) && /\/edit/.test(rp));
+const pe = rd("lib/integrations/processEvent.ts"), ia = rd("lib/actions/integrations.ts");
+ok("automatic check-outs use the chosen template, only if it is the company's own, and fill the address/landlord fields", /templateId: checkOutTemplateId/.test(pe) && /id: integration\.defaultCheckOutTemplateId, companyId: integration\.companyId/.test(pe) && /fillTemplateAnswers\(integration\.companyId, checkOutTemplateId/.test(pe) && /where: \{ id: templateId, companyId \}/.test(pe));
+ok("check-ins still fill their template too", /fillTemplateAnswers\(integration\.companyId, integration\.defaultTemplateId/.test(pe));
+ok("saving the setting only accepts the company's own template; the settings page offers it", /id: settings\.defaultCheckOutTemplateId, companyId/.test(ia) && /checkout-template/.test(rd("app/dashboard/settings/integrations/integration-card.tsx")) && /defaultCheckOutTemplateId/.test(rd("app/dashboard/settings/integrations/page.tsx")));
+console.log(`\nUpgrade fixes: ${pass} passed, ${fail} failed`); process.exit(fail ? 1 : 0);

@@ -1,0 +1,12 @@
+import { readFileSync } from "node:fs";
+import { isStaleServerActionError } from "../lib/sentryFilter";
+let pass = 0, fail = 0; const ok = (n: string, c: boolean, x: any = "") => { c ? pass++ : (fail++, console.log("FAIL:", n, JSON.stringify(x).slice(0, 200))); };
+const MSG = "Failed to find Server Action. This request might be from an older or newer deployment.";
+ok("the exact error from Sentry is recognised (exception value)", isStaleServerActionError({ exception: { values: [{ type: "Error", value: MSG }] } }));
+ok("also by message and by the original error", isStaleServerActionError({ message: MSG }) && isStaleServerActionError({}, { originalException: new Error(MSG) }) && isStaleServerActionError({}, { originalException: MSG }));
+ok("case does not matter", isStaleServerActionError({ message: "FAILED TO FIND SERVER ACTION" }));
+ok("real errors are never dropped", [{ message: "Cannot read properties of undefined" }, { exception: { values: [{ value: "Prisma error P2002" }] } }, { exception: { values: [{ value: "Failed to find the property" }] } }, {}, null, undefined, "x", 5].every((e) => !isStaleServerActionError(e as any)));
+ok("junk never throws", !isStaleServerActionError({ exception: { values: [null, { value: 5 }] } } as any, { get originalException() { throw new Error("boom"); } }));
+const cfg = readFileSync("sentry.server.config.ts", "utf8");
+ok("the server config drops it (and only it) before sending", /beforeSend\(event, hint\) \{\s*return isStaleServerActionError\(event, hint\) \? null : event;/.test(cfg));
+console.log(`\nSentry filter: ${pass} passed, ${fail} failed`); process.exit(fail ? 1 : 0);

@@ -1,0 +1,15 @@
+import { propertyOptions as PO } from "../lib/propertyPicker";
+import { filterOptions as F } from "../lib/searchSelect";
+let pass = 0, fail = 0; const ok = (n: string, c: boolean, x: any = "") => { c ? pass++ : (fail++, console.log("FAIL:", n, typeof x === "string" ? x.slice(0, 300) : JSON.stringify(x).slice(0, 400))); };
+const props = [{ id: "p1", address: "2 Tudor House", city: "London", postcode: "E17 4RT", landlordName: "ZKM Lettings", type: "flat" }, { id: "p2", address: "  14   Station Road ", city: "Watford", postcode: null, landlordName: null, type: "house" }, { id: "p3", address: "Unit 5, Trade Park", city: null, postcode: "WD24 7XX", landlordName: "Mrs Okafor", type: "commercial" }];
+const o = PO(props);
+ok("each property becomes a choice named by its address, with the city and postcode as the small second line", o[0].value === "p1" && o[0].label === "2 Tudor House" && o[0].hint === "London · E17 4RT" && o[2].hint === "WD24 7XX" && o[1].hint === "Watford");
+ok("extra spaces in an address are tidied", o[1].label === "14 Station Road");
+ok("a property with nothing but an address has no second line and no extra words", PO([{ id: "x", address: "1 High St" }])[0].hint === undefined && PO([{ id: "x", address: "1 High St" }])[0].keywords!.length === 0);
+ok("the order given is kept (the page sends them A to Z)", o.map((x) => x.value).join() === "p1,p2,p3");
+const find = (q: string) => F(o, q).shown.map((x) => x.value).join();
+ok("a property is found by its address, its city, its postcode (with or without the space), its landlord, and its type", find("tudor") === "p1" && find("watford") === "p2" && find("e17 4rt") === "p1" && find("e174rt") === "p1" && find("okafor") === "p3" && find("zkm") === "p1" && find("commercial") === "p3");
+ok("two words from different fields find it: 'london patel' finds nothing, 'london zkm' finds the Tudor House", find("london patel") === "" && find("london zkm") === "p1");
+ok("properties without an id or an address are left out, and junk never throws", PO([null, 5, "x", {}, { id: "", address: "A" }, { id: "a", address: "   " }, { id: 5, address: "B" }, { id: "ok", address: "Fine" }] as any).map((x) => x.value).join() === "ok" && [null, undefined, 5, "x", {}].every((v) => { try { return PO(v as any).length === 0; } catch { return false; } }));
+ok("non-text fields are ignored rather than shown as 'undefined' or '[object Object]'", (() => { const r = PO([{ id: "a", address: "A St", city: 5, postcode: {}, landlordName: ["x"], type: null }] as any)[0]; return r.hint === undefined && r.keywords!.length === 0; })());
+console.log(`\nProperty picker choices: ${pass} passed, ${fail} failed`); process.exit(fail ? 1 : 0);
